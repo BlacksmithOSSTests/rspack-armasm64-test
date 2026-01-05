@@ -1,0 +1,248 @@
+name: Test ARM64 Cross-Compile Workaround
+
+# Tests the armasm64.exe workaround for Blacksmith Windows runners
+# Issue: armasm64.exe missing when cross-compiling to aarch64-pc-windows-msvc
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test-armasm64-workaround
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Job 1: Without workaround - expected to FAIL
+  without-workaround:
+    name: Build aarch64-pc-windows-msvc (No Workaround)
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check for armasm64.exe
+        shell: pwsh
+        run: |
+          Write-Host "Searching for armasm64.exe in Visual Studio..."
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "Found armasm64.exe at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "armasm64.exe NOT found in Visual Studio installation"
+          }
+
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and install zstd
+        run: |
+          curl -L https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip --output zstd.zip
+          unzip zstd.zip
+          mv zstd-v1.5.7-win64/zstd.exe C:/Windows/System32/
+          zstd --version
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc (expected to fail)
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
+
+  # Job 2: With workaround - install ARM64 tools using setup.exe
+  with-workaround:
+    name: Build aarch64-pc-windows-msvc (With Workaround)
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install ARM64 Build Tools
+        shell: pwsh
+        run: |
+          Write-Host "Installing Microsoft.VisualStudio.Component.VC.Tools.ARM64..."
+
+          # Find VS installation path
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          Write-Host "VS Installation Path: $installPath"
+
+          # Use setup.exe from the VS Installer directory (not vs_installer.exe)
+          # Per Microsoft docs: https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+
+          if (-not (Test-Path $setupExe)) {
+            Write-Error "setup.exe not found at $setupExe"
+            exit 1
+          }
+
+          Write-Host "Using setup.exe: $setupExe"
+          Write-Host "Running: modify --installPath `"$installPath`" --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --quiet --norestart"
+
+          $startTime = Get-Date
+
+          # Use cmd /c to run setup.exe and wait for completion
+          # --quiet runs without UI, --norestart prevents reboot
+          $process = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+
+          $duration = (Get-Date) - $startTime
+          Write-Host "Installation process exited with code $($process.ExitCode) after $($duration.TotalSeconds) seconds"
+
+          if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+            # 3010 = reboot required, which is fine
+            Write-Warning "Installation may have failed with exit code $($process.ExitCode)"
+          }
+
+          # Give it a moment to finalize
+          Start-Sleep -Seconds 10
+
+      - name: Verify armasm64.exe
+        shell: pwsh
+        run: |
+          Write-Host "Verifying armasm64.exe installation..."
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
+
+          # List what's in the MSVC bin directories
+          Write-Host "Checking MSVC bin directories..."
+          $msvcPath = "$vsPath\VC\Tools\MSVC"
+          if (Test-Path $msvcPath) {
+            $versions = Get-ChildItem -Path $msvcPath -Directory
+            foreach ($ver in $versions) {
+              Write-Host "  MSVC version: $($ver.Name)"
+              $binPath = Join-Path $ver.FullName "bin"
+              if (Test-Path $binPath) {
+                $hostDirs = Get-ChildItem -Path $binPath -Directory
+                foreach ($hostDir in $hostDirs) {
+                  Write-Host "    Host: $($hostDir.Name)"
+                  $targetDirs = Get-ChildItem -Path $hostDir.FullName -Directory
+                  foreach ($targetDir in $targetDirs) {
+                    Write-Host "      Target: $($targetDir.Name)"
+                  }
+                }
+              }
+            }
+          }
+
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "SUCCESS: armasm64.exe found at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Error "FAILED: armasm64.exe still not found after installation"
+            exit 1
+          }
+
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and install zstd
+        run: |
+          curl -L https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip --output zstd.zip
+          unzip zstd.zip
+          mv zstd-v1.5.7-win64/zstd.exe C:/Windows/System32/
+          zstd --version
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc (should succeed)
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
+
+  # Job 3: GitHub-hosted reference
+  github-hosted:
+    name: Build aarch64-pc-windows-msvc (GitHub-hosted)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check for armasm64.exe
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "armasm64.exe found at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "armasm64.exe NOT found"
+            exit 1
+          }
+
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
