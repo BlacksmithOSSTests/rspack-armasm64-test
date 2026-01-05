@@ -34,6 +34,9 @@ jobs:
             Write-Host "armasm64.exe NOT found in Visual Studio installation"
           }
 
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -153,6 +156,9 @@ jobs:
             exit 1
           }
 
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -207,6 +213,9 @@ jobs:
             Write-Host "armasm64.exe NOT found"
             exit 1
           }
+
+      - name: Enable long paths in git
+        run: git config --system core.longpaths true
 
       - name: Checkout
         uses: actions/checkout@v4
