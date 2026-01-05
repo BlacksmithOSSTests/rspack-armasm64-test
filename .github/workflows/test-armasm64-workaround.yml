@@ -68,7 +68,7 @@ jobs:
       - name: Build aarch64-pc-windows-msvc (expected to fail)
         run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
 
-  # Job 2: With workaround - install ARM64 tools first
+  # Job 2: With workaround - install ARM64 tools first using vs_installershell
   with-workaround:
     name: Build aarch64-pc-windows-msvc (With Workaround)
     runs-on: blacksmith-8vcpu-windows-2025
@@ -81,35 +81,61 @@ jobs:
         run: |
           Write-Host "Installing Microsoft.VisualStudio.Component.VC.Tools.ARM64..."
 
-          $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
-          if (-not (Test-Path $vsInstaller)) {
-            Write-Error "VS Installer not found"
-            exit 1
-          }
-
+          # Find VS installation path first
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installPath = & $vswhere -latest -property installationPath
           Write-Host "VS Installation Path: $installPath"
 
-          $startTime = Get-Date
-          & $vsInstaller modify `
-            --installPath $installPath `
-            --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
-            --quiet `
-            --wait
+          # Use vs_installershell.exe which supports --wait properly
+          $vsInstallerShell = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installershell.exe"
 
-          $duration = (Get-Date) - $startTime
-          Write-Host "ARM64 tools installation took $($duration.TotalSeconds) seconds"
+          if (-not (Test-Path $vsInstallerShell)) {
+            Write-Host "vs_installershell.exe not found, trying alternative approach..."
+            # Alternative: Use the setup.exe from the VS installation
+            $setupExe = Join-Path $installPath "Common7\IDE\CommonExtensions\Microsoft\VSConfig\setup.exe"
+            if (Test-Path $setupExe) {
+              Write-Host "Using setup.exe from VS installation..."
+              $startTime = Get-Date
+              $process = Start-Process -FilePath $setupExe `
+                -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", "--quiet", "--norestart" `
+                -Wait -PassThru -NoNewWindow
+              $duration = (Get-Date) - $startTime
+              Write-Host "Installation process exited with code $($process.ExitCode) after $($duration.TotalSeconds) seconds"
+            } else {
+              Write-Host "Trying vs_installer.exe with Start-Process..."
+              $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+              $startTime = Get-Date
+              $process = Start-Process -FilePath $vsInstaller `
+                -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", "--quiet" `
+                -Wait -PassThru -NoNewWindow
+              $duration = (Get-Date) - $startTime
+              Write-Host "Installation process exited with code $($process.ExitCode) after $($duration.TotalSeconds) seconds"
+            }
+          } else {
+            Write-Host "Using vs_installershell.exe..."
+            $startTime = Get-Date
+            $process = Start-Process -FilePath $vsInstallerShell `
+              -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", "--quiet", "--wait" `
+              -Wait -PassThru -NoNewWindow
+            $duration = (Get-Date) - $startTime
+            Write-Host "Installation process exited with code $($process.ExitCode) after $($duration.TotalSeconds) seconds"
+          }
+
+          # Give it a moment to finalize
+          Start-Sleep -Seconds 5
 
       - name: Verify armasm64.exe
         shell: pwsh
         run: |
+          Write-Host "Verifying armasm64.exe installation..."
           $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
           $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
           if ($found) {
             Write-Host "SUCCESS: armasm64.exe found at:"
             $found | ForEach-Object { Write-Host "  $($_.FullName)" }
           } else {
+            Write-Host "Listing ARM64 related files in MSVC directory..."
+            Get-ChildItem -Path "$vsPath\Enterprise\VC\Tools\MSVC" -Recurse -Filter "*arm64*" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
             Write-Error "FAILED: armasm64.exe still not found"
             exit 1
           }
