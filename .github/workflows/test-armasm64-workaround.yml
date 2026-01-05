@@ -1,0 +1,197 @@
+name: Test ARM64 Cross-Compile Workaround
+
+# Tests the armasm64.exe workaround for Blacksmith Windows runners
+# Issue: armasm64.exe missing when cross-compiling to aarch64-pc-windows-msvc
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test-armasm64-workaround
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Job 1: Without workaround - expected to FAIL
+  without-workaround:
+    name: Build aarch64-pc-windows-msvc (No Workaround)
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check for armasm64.exe
+        shell: pwsh
+        run: |
+          Write-Host "Searching for armasm64.exe in Visual Studio..."
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "Found armasm64.exe at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "armasm64.exe NOT found in Visual Studio installation"
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and install zstd
+        run: |
+          curl -L https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip --output zstd.zip
+          unzip zstd.zip
+          mv zstd-v1.5.7-win64/zstd.exe C:/Windows/System32/
+          zstd --version
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc (expected to fail)
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
+
+  # Job 2: With workaround - install ARM64 tools first
+  with-workaround:
+    name: Build aarch64-pc-windows-msvc (With Workaround)
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install ARM64 Build Tools
+        shell: pwsh
+        run: |
+          Write-Host "Installing Microsoft.VisualStudio.Component.VC.Tools.ARM64..."
+
+          $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          if (-not (Test-Path $vsInstaller)) {
+            Write-Error "VS Installer not found"
+            exit 1
+          }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -property installationPath
+          Write-Host "VS Installation Path: $installPath"
+
+          $startTime = Get-Date
+          & $vsInstaller modify `
+            --installPath $installPath `
+            --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            --quiet `
+            --wait
+
+          $duration = (Get-Date) - $startTime
+          Write-Host "ARM64 tools installation took $($duration.TotalSeconds) seconds"
+
+      - name: Verify armasm64.exe
+        shell: pwsh
+        run: |
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "SUCCESS: armasm64.exe found at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Error "FAILED: armasm64.exe still not found"
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and install zstd
+        run: |
+          curl -L https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip --output zstd.zip
+          unzip zstd.zip
+          mv zstd-v1.5.7-win64/zstd.exe C:/Windows/System32/
+          zstd --version
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc (should succeed)
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
+
+  # Job 3: GitHub-hosted reference
+  github-hosted:
+    name: Build aarch64-pc-windows-msvc (GitHub-hosted)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check for armasm64.exe
+        shell: pwsh
+        run: |
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
+          if ($found) {
+            Write-Host "armasm64.exe found at:"
+            $found | ForEach-Object { Write-Host "  $($_.FullName)" }
+          } else {
+            Write-Host "armasm64.exe NOT found"
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pnpm Setup
+        timeout-minutes: 5
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Install Binding Dependencies
+        uses: ./.github/actions/pnpm/install-binding-dependencies
+        with:
+          save-if: false
+
+      - name: Install Rust Toolchain
+        uses: ./.github/actions/rustup
+        with:
+          key: aarch64-pc-windows-msvc-debug
+          save-if: false
+
+      - name: Setup Rust Target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Run Cargo codegen
+        run: cargo codegen
+
+      - name: Build aarch64-pc-windows-msvc
+        run: RUST_TARGET=aarch64-pc-windows-msvc DISABLE_PLUGIN=1 pnpm build:binding:debug
