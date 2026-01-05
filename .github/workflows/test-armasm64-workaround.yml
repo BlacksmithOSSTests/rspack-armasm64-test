@@ -25,7 +25,8 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Searching for armasm64.exe in Visual Studio..."
-          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
           $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
           if ($found) {
             Write-Host "Found armasm64.exe at:"
@@ -86,7 +87,7 @@ jobs:
 
           # Find VS installation path
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installPath = & $vswhere -latest -property installationPath
+          $installPath = & $vswhere -products * -latest -property installationPath
           Write-Host "VS Installation Path: $installPath"
 
           # Use setup.exe from the VS Installer directory (not vs_installer.exe)
@@ -124,11 +125,12 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Verifying armasm64.exe installation..."
-          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
 
           # List what's in the MSVC bin directories
           Write-Host "Checking MSVC bin directories..."
-          $msvcPath = "$vsPath\Enterprise\VC\Tools\MSVC"
+          $msvcPath = "$vsPath\VC\Tools\MSVC"
           if (Test-Path $msvcPath) {
             $versions = Get-ChildItem -Path $msvcPath -Directory
             foreach ($ver in $versions) {
@@ -204,7 +206,8 @@ jobs:
       - name: Check for armasm64.exe
         shell: pwsh
         run: |
-          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -products * -latest -property installationPath
           $found = Get-ChildItem -Path $vsPath -Recurse -Filter "armasm64.exe" -ErrorAction SilentlyContinue
           if ($found) {
             Write-Host "armasm64.exe found at:"
