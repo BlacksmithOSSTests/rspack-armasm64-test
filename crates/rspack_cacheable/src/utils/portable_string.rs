@@ -98,7 +98,7 @@ impl PortableString {
   }
 
   /// Convert back to string, replacing <project_root> with actual project_root
-  pub fn into_string(self, project_root: Option<&Path>) -> String {
+  pub fn into_path_string(self, project_root: Option<&Path>) -> String {
     let Some(project_root) = project_root else {
       return self.content;
     };
@@ -145,6 +145,6 @@ where
   }
 
   fn deserialize(self, guard: &ContextGuard) -> Result<T> {
-    Ok(T::from(self.into_string(guard.project_root())))
+    Ok(T::from(self.into_path_string(guard.project_root())))
   }
 }
